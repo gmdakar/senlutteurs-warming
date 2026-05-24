@@ -1,1 +1,74 @@
+name: LSCache Warming
 
+on:
+  schedule:
+    # Chauffe complète chaque nuit à 3h00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:  # permet de lancer manuellement depuis GitHub
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Activer le flag warming_in_progress
+        run: |
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "$HOME/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
+             $HOME/www/vendor/drush/drush/drush state:set warming_started_at $(date +%s)"
+
+      - name: Chauffer LSCache via sitemap
+        run: |
+          URL_COUNT=0
+          HIT_COUNT=0
+          MISS_COUNT=0
+          page=1
+
+          while true; do
+            urls=$(curl -s "${{ secrets.SITE_URL }}/sitemap.xml?page=$page" \
+              | grep -oE '<loc>[^<]+</loc>' \
+              | sed -e 's/<loc>//' -e 's/<\/loc>//' \
+              | grep -v "sitemap\.xml")
+
+            if [ -z "$urls" ]; then
+              echo "Fin du sitemap à la page $page."
+              break
+            fi
+
+            while read -r url; do
+              [ -z "$url" ] && continue
+              ((URL_COUNT++))
+
+              response=$(curl -s -D - -o /dev/null --max-time 15 \
+                -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+                "$url")
+
+              http_code=$(echo "$response" | grep -oP '(?<=HTTP/\S\s)\d+' | tail -1)
+              cache_status=$(echo "$response" | grep -i '^x-litespeed-cache:' | awk '{print $2}' | tr -d '\r')
+
+              echo "[$URL_COUNT] [$http_code] [${cache_status:-nocache}] $url"
+
+              if [ "$cache_status" = "hit" ]; then ((HIT_COUNT++)); else ((MISS_COUNT++)); fi
+
+              sleep 0.5
+
+            done <<< "$urls"
+
+            page=$((page + 1))
+          done
+
+          echo "Total: $URL_COUNT URLs | HIT: $HIT_COUNT | MISS: $MISS_COUNT"
+
+      - name: Désactiver le flag warming_in_progress
+        if: always()  # s'exécute même si l'étape curl échoue
+        run: |
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "$HOME/www/vendor/drush/drush/drush state:del warming_in_progress"
