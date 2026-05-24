@@ -2,8 +2,8 @@ name: LSCache Warming
 
 on:
   schedule:
-    - cron: '0 3 * * *'  # chaque nuit à 3h00 UTC
-  workflow_dispatch:       # déclenchement manuel possible
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 jobs:
   warm:
@@ -11,17 +11,18 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 5022 -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
       - name: Activer flag warming_in_progress
         run: |
           ssh -p 5022 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
              ~/www/vendor/drush/drush/drush state:set warming_started_at $(date +%s)"
-
-      - name: Désactiver flag warming_in_progress
-        if: always()
-        run: |
-          ssh -p 5022 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "~/www/vendor/drush/drush/drush state:del warming_in_progress"
 
       - name: Chauffer LSCache via sitemap
         run: |
@@ -71,5 +72,5 @@ jobs:
       - name: Désactiver flag warming_in_progress
         if: always()
         run: |
-          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+          ssh -p 5022 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "~/www/vendor/drush/drush/drush state:del warming_in_progress"
