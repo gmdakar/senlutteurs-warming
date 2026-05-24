@@ -20,7 +20,7 @@ jobs:
 
       - name: Activer flag warming_in_progress
         run: |
-          ssh -p 5022 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+          ssh -p 5022 ${{ secrets.SSH_USER }}@185.22.110.14 \
             "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
              ~/www/vendor/drush/drush/drush state:set warming_started_at $(date +%s)"
 
