@@ -2,9 +2,8 @@ name: LSCache Warming
 
 on:
   schedule:
-    # Chauffe complète chaque nuit à 3h00 UTC
-    - cron: '0 3 * * *'
-  workflow_dispatch:  # permet de lancer manuellement depuis GitHub
+    - cron: '0 3 * * *'  # chaque nuit à 3h00 UTC
+  workflow_dispatch:       # déclenchement manuel possible
 
 jobs:
   warm:
@@ -19,11 +18,11 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Activer le flag warming_in_progress
+      - name: Activer flag warming_in_progress
         run: |
           ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "$HOME/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
-             $HOME/www/vendor/drush/drush/drush state:set warming_started_at $(date +%s)"
+            "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
+             ~/www/vendor/drush/drush/drush state:set warming_started_at $(date +%s)"
 
       - name: Chauffer LSCache via sitemap
         run: |
@@ -33,7 +32,7 @@ jobs:
           page=1
 
           while true; do
-            urls=$(curl -s "${{ secrets.SITE_URL }}/sitemap.xml?page=$page" \
+            urls=$(curl -s "https://www.senlutteurs.com/sitemap.xml?page=$page" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's/<loc>//' -e 's/<\/loc>//' \
               | grep -v "sitemap\.xml")
@@ -58,17 +57,20 @@ jobs:
 
               if [ "$cache_status" = "hit" ]; then ((HIT_COUNT++)); else ((MISS_COUNT++)); fi
 
-              sleep 0.5
+              sleep 0.3
 
             done <<< "$urls"
 
+            echo "--- Page sitemap $page terminée ---"
             page=$((page + 1))
           done
 
-          echo "Total: $URL_COUNT URLs | HIT: $HIT_COUNT | MISS: $MISS_COUNT"
+          echo "=================================="
+          echo "Total : $URL_COUNT | HIT : $HIT_COUNT | MISS : $MISS_COUNT"
+          echo "=================================="
 
-      - name: Désactiver le flag warming_in_progress
-        if: always()  # s'exécute même si l'étape curl échoue
+      - name: Désactiver flag warming_in_progress
+        if: always()
         run: |
           ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "$HOME/www/vendor/drush/drush/drush state:del warming_in_progress"
+            "~/www/vendor/drush/drush/drush state:del warming_in_progress"
