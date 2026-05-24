@@ -14,15 +14,13 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          # Utiliser l'IP directement pour éviter tout problème DNS
-          ssh-keyscan -p 5022 -H 185.22.110.14 >> ~/.ssh/known_hosts
+          ssh-keyscan -p 5022 -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
       - name: Activer flag warming_in_progress
         run: |
-          ssh -p 5022 ${{ secrets.SSH_USER }}@185.22.110.14 \
+          ssh -p 5022 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
              ~/www/vendor/drush/drush/drush state:set warming_started_at \$(date +%s)"
-          # ^ échapper \$ pour évaluation côté serveur
 
       - name: Chauffer LSCache via sitemap
         run: |
@@ -61,5 +59,5 @@ jobs:
       - name: Désactiver flag warming_in_progress
         if: always()
         run: |
-          ssh -p 5022 ${{ secrets.SSH_USER }}@185.22.110.14 \
+          ssh -p 5022 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "~/www/vendor/drush/drush/drush state:del warming_in_progress"
