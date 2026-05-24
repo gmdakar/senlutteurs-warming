@@ -1,7 +1,7 @@
-name: LSCache Warming OK
+name: LSCache Warming
 on:
   schedule:
-    - cron: '30 4 * * *'
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
@@ -30,34 +30,58 @@ jobs:
           MISS_COUNT=0
           ERROR_COUNT=0
           page=1
+
           while true; do
             urls=$(curl -s "https://www.senlutteurs.com/sitemap.xml?page=$page" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's/<loc>//' -e 's/<\/loc>//' \
               | grep -v "sitemap\.xml")
+
             if [ -z "$urls" ]; then
               echo "Fin du sitemap à la page $page."
               break
             fi
+
             while read -r url; do
               [ -z "$url" ] && continue
+
               URL_COUNT=$((URL_COUNT + 1))
+
               response=$(curl -s -D - -o /dev/null --max-time 15 \
-                -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-                "$url" 2>/dev/null) || { echo "[$URL_COUNT] [CURL_ERR] $url"; ERROR_COUNT=$((ERROR_COUNT + 1)); continue; }
+                -A "LSCache-Warmer/1.0 senlutteurs.com" \
+                "$url" 2>/dev/null) || {
+                echo "[$URL_COUNT] [CURL_ERR] $url"
+                ERROR_COUNT=$((ERROR_COUNT + 1))
+                sleep 2
+                continue
+              }
+
               http_code=$(echo "$response" | grep -oP '(?<=HTTP/\S\s)\d+' | tail -1)
               cache_status=$(echo "$response" | grep -i '^x-litespeed-cache:' | awk '{print $2}' | tr -d '\r')
+
               echo "[$URL_COUNT] [$http_code] [${cache_status:-nocache}] $url"
+
               if [ "$cache_status" = "hit" ]; then
                 HIT_COUNT=$((HIT_COUNT + 1))
               else
                 MISS_COUNT=$((MISS_COUNT + 1))
               fi
-              sleep 0.3
+
+              # Ralentir si le serveur est sous pression
+              if [ "$http_code" = "429" ] || [ "$http_code" = "503" ]; then
+                echo "Serveur sous pression ($http_code), pause 15s..."
+                sleep 15
+              else
+                sleep 0.5
+              fi
+
             done <<< "$urls"
-            echo "--- Page sitemap $page terminée ---"
+
+            echo "--- Page sitemap $page terminée (Total: $URL_COUNT | HIT: $HIT_COUNT | MISS: $MISS_COUNT) ---"
+            sleep 5
             page=$((page + 1))
           done
+
           echo "=================================="
           echo "Total : $URL_COUNT | HIT : $HIT_COUNT | MISS : $MISS_COUNT | ERRORS : $ERROR_COUNT"
           echo "=================================="
