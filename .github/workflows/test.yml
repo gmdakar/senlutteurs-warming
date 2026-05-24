@@ -1,0 +1,15 @@
+name: WAF Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test curl senlutteurs
+        run: |
+          curl -s -D - -o /dev/null --max-time 15 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            "https://www.senlutteurs.com/fr/lutteurs/pape-yekini/12241" \
+            | grep -iE "^HTTP|^x-litespeed-cache|^cf-|^x-"
