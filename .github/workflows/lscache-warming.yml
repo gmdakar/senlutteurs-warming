@@ -2,13 +2,13 @@ name: LSCache Warming
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '30 4 * * *'
   workflow_dispatch:
 
 jobs:
   warm:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: Setup SSH
@@ -33,59 +33,36 @@ jobs:
           URL_COUNT=0
           HIT_COUNT=0
           MISS_COUNT=0
-          MOBILE_HIT_COUNT=0
-          MOBILE_MISS_COUNT=0
           NOCACHE_COUNT=0
           ERROR_COUNT=0
-          REDIRECT_COUNT=0
 
-          page=1
+          PAGE=1
 
           DOMAIN="https://www.senlutteurs.com"
 
-          UA_DESKTOP="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
-
-          UA_MOBILE="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
           normalize_url() {
             local u="$1"
 
-            # force https
             u=$(echo "$u" | sed -E 's#^http://#https://#')
-
-            # force www
             u=$(echo "$u" | sed -E 's#^https://senlutteurs\.com#https://www.senlutteurs.com#')
-
-            # remove fragments
             u=$(echo "$u" | sed -E 's/#.*$//')
 
             echo "$u"
           }
 
-          get_headers() {
+          request_headers() {
             local url="$1"
-            local ua="$2"
 
             curl -s \
               -D - \
               -o /dev/null \
               --compressed \
               --http2 \
-              --max-time 25 \
-              -A "$ua" \
-              -H "Accept: text/html,application/xhtml+xml" \
-              -H "Cache-Control: no-cache" \
-              "$url" 2>/dev/null
-          }
-
-          get_effective_url() {
-            local url="$1"
-
-            curl -s \
-              -o /dev/null \
-              -w '%{url_effective}' \
               --max-time 20 \
-              "$url"
+              -A "$UA" \
+              "$url" 2>/dev/null
           }
 
           extract_header() {
@@ -102,180 +79,108 @@ jobs:
 
           while true; do
 
-            sitemap_urls=$(curl -s "${DOMAIN}/sitemap.xml?page=${page}" \
+            URLS=$(curl -s "${DOMAIN}/sitemap.xml?page=${PAGE}" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's#<loc>##' -e 's#</loc>##' \
               | grep -v 'sitemap\.xml')
 
-            if [ -z "$sitemap_urls" ]; then
+            if [ -z "$URLS" ]; then
               echo ""
-              echo "===== FIN SITEMAP PAGE ${page} ====="
+              echo "===== FIN SITEMAP PAGE ${PAGE} ====="
               break
             fi
 
             echo ""
-            echo "===== SITEMAP PAGE ${page} ====="
+            echo "===== SITEMAP PAGE ${PAGE} ====="
 
-            while read -r raw_url; do
+            while read -r RAW_URL; do
 
-              [ -z "$raw_url" ] && continue
+              [ -z "$RAW_URL" ] && continue
 
               URL_COUNT=$((URL_COUNT + 1))
 
-              url=$(normalize_url "$raw_url")
+              URL=$(normalize_url "$RAW_URL")
 
               echo ""
-              echo "--------------------------------------------------"
-              echo "[$URL_COUNT] URL: $url"
+              echo "[$URL_COUNT] $URL"
 
-              effective_url=$(get_effective_url "$url")
+              ##########################################################
+              # WARM REQUEST
+              ##########################################################
 
-              if [ "$effective_url" != "$url" ]; then
-                echo "↳ REDIRECT:"
-                echo "    FROM: $url"
-                echo "    TO  : $effective_url"
+              HEADERS1=$(request_headers "$URL")
 
-                REDIRECT_COUNT=$((REDIRECT_COUNT + 1))
-
-                url="$effective_url"
-              fi
-
-              ############################################################
-              # DESKTOP WARM
-              ############################################################
-
-              echo "↳ DESKTOP WARM..."
-
-              headers1=$(get_headers "$url" "$UA_DESKTOP")
-
-              if [ -z "$headers1" ]; then
-                echo "    [ERROR] CURL FAILED"
+              if [ -z "$HEADERS1" ]; then
+                echo "    [ERROR]"
                 ERROR_COUNT=$((ERROR_COUNT + 1))
-                sleep 2
-                continue
-              fi
-
-              http_code=$(echo "$headers1" \
-                | grep -oP '^HTTP/\S+\s+\K\d+' \
-                | tail -1)
-
-              lscache_control=$(extract_header "$headers1" "x-litespeed-cache-control")
-              cache_status1=$(extract_header "$headers1" "x-litespeed-cache")
-              vary_header=$(extract_header "$headers1" "vary")
-              set_cookie=$(extract_header "$headers1" "set-cookie")
-
-              echo "    HTTP: ${http_code:-unknown}"
-              echo "    X-LiteSpeed-Cache: ${cache_status1:-none}"
-
-              [ -n "$lscache_control" ] && \
-                echo "    X-LiteSpeed-Cache-Control: $lscache_control"
-
-              [ -n "$vary_header" ] && \
-                echo "    Vary: $vary_header"
-
-              ############################################################
-              # NO CACHE DETECTION
-              ############################################################
-
-              if echo "$lscache_control" \
-                | grep -qiE 'private|no-cache|no-store'; then
-
-                echo "    [NO CACHE]"
-
-                [ -n "$set_cookie" ] && \
-                  echo "    Set-Cookie: $(echo "$set_cookie" | cut -c1-120)"
-
-                NOCACHE_COUNT=$((NOCACHE_COUNT + 1))
-
                 sleep 1
                 continue
               fi
 
-              ############################################################
-              # DESKTOP VERIFY
-              ############################################################
+              HTTP_CODE=$(echo "$HEADERS1" \
+                | grep -oP '^HTTP/\S+\s+\K\d+' \
+                | tail -1)
 
-              sleep 2
+              CACHE_CONTROL=$(extract_header "$HEADERS1" "x-litespeed-cache-control")
 
-              headers2=$(get_headers "$url" "$UA_DESKTOP")
+              if echo "$CACHE_CONTROL" \
+                | grep -qiE 'private|no-cache|no-store'; then
 
-              cache_status2=$(extract_header "$headers2" "x-litespeed-cache")
+                echo "    [NO CACHE]"
+                NOCACHE_COUNT=$((NOCACHE_COUNT + 1))
 
-              if echo "$cache_status2" | grep -qi '^hit'; then
+                sleep 0.5
+                continue
+              fi
 
-                echo "    [DESKTOP HIT ✓]"
+              ##########################################################
+              # VERIFY HIT
+              ##########################################################
 
+              sleep 0.5
+
+              HEADERS2=$(request_headers "$URL")
+
+              CACHE_STATUS=$(extract_header "$HEADERS2" "x-litespeed-cache")
+
+              if echo "$CACHE_STATUS" | grep -qi '^hit'; then
+
+                echo "    [HIT ✓]"
                 HIT_COUNT=$((HIT_COUNT + 1))
 
               else
 
-                echo "    [DESKTOP MISS ✗]"
-                echo "    Returned: ${cache_status2:-none}"
-
+                echo "    [MISS ✗] (${CACHE_STATUS:-none})"
                 MISS_COUNT=$((MISS_COUNT + 1))
               fi
 
-              ############################################################
-              # MOBILE WARM
-              ############################################################
-
-              echo "↳ MOBILE WARM..."
-
-              get_headers "$url" "$UA_MOBILE" > /dev/null
-
-              sleep 2
-
-              headers_mobile=$(get_headers "$url" "$UA_MOBILE")
-
-              mobile_status=$(extract_header "$headers_mobile" "x-litespeed-cache")
-
-              if echo "$mobile_status" | grep -qi '^hit'; then
-
-                echo "    [MOBILE HIT ✓]"
-
-                MOBILE_HIT_COUNT=$((MOBILE_HIT_COUNT + 1))
-
-              else
-
-                echo "    [MOBILE MISS ✗]"
-                echo "    Returned: ${mobile_status:-none}"
-
-                MOBILE_MISS_COUNT=$((MOBILE_MISS_COUNT + 1))
-              fi
-
-              ############################################################
+              ##########################################################
               # SERVER LOAD PROTECTION
-              ############################################################
+              ##########################################################
 
-              if [ "$http_code" = "429" ] || [ "$http_code" = "503" ]; then
+              if [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "503" ]; then
 
-                echo ""
-                echo "⚠ SERVER UNDER LOAD ($http_code)"
-                echo "↳ Sleeping 20s..."
-
-                sleep 20
+                echo "    [SERVER LOAD] sleeping 15s"
+                sleep 15
 
               else
 
-                sleep 1
+                sleep 0.5
               fi
 
-            done <<< "$sitemap_urls"
+            done <<< "$URLS"
 
             echo ""
-            echo "===== PAGE ${page} DONE ====="
-            echo "TOTAL URLS     : $URL_COUNT"
-            echo "DESKTOP HIT    : $HIT_COUNT"
-            echo "DESKTOP MISS   : $MISS_COUNT"
-            echo "MOBILE HIT     : $MOBILE_HIT_COUNT"
-            echo "MOBILE MISS    : $MOBILE_MISS_COUNT"
-            echo "NO CACHE       : $NOCACHE_COUNT"
-            echo "REDIRECTS      : $REDIRECT_COUNT"
-            echo "ERRORS         : $ERROR_COUNT"
+            echo "===== PAGE ${PAGE} DONE ====="
+            echo "TOTAL    : $URL_COUNT"
+            echo "HIT      : $HIT_COUNT"
+            echo "MISS     : $MISS_COUNT"
+            echo "NO CACHE : $NOCACHE_COUNT"
+            echo "ERRORS   : $ERROR_COUNT"
 
-            page=$((page + 1))
+            PAGE=$((PAGE + 1))
 
-            sleep 5
+            sleep 3
 
           done
 
@@ -283,14 +188,11 @@ jobs:
           echo "=================================================="
           echo "FINAL REPORT"
           echo "=================================================="
-          echo "TOTAL URLS     : $URL_COUNT"
-          echo "DESKTOP HIT    : $HIT_COUNT"
-          echo "DESKTOP MISS   : $MISS_COUNT"
-          echo "MOBILE HIT     : $MOBILE_HIT_COUNT"
-          echo "MOBILE MISS    : $MOBILE_MISS_COUNT"
-          echo "NO CACHE       : $NOCACHE_COUNT"
-          echo "REDIRECTS      : $REDIRECT_COUNT"
-          echo "ERRORS         : $ERROR_COUNT"
+          echo "TOTAL URLS : $URL_COUNT"
+          echo "HIT        : $HIT_COUNT"
+          echo "MISS       : $MISS_COUNT"
+          echo "NO CACHE   : $NOCACHE_COUNT"
+          echo "ERRORS     : $ERROR_COUNT"
           echo "=================================================="
 
       - name: Désactiver flag warming_in_progress
