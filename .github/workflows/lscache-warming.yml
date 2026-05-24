@@ -1,4 +1,4 @@
-name: LSCache Warming
+name: LSCache Warming OK
 on:
   schedule:
     - cron: '0 3 * * *'
