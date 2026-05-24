@@ -23,10 +23,12 @@ jobs:
              ~/www/vendor/drush/drush/drush state:set warming_started_at \$(date +%s)"
 
       - name: Chauffer LSCache via sitemap
+        shell: bash {0}
         run: |
           URL_COUNT=0
           HIT_COUNT=0
           MISS_COUNT=0
+          ERROR_COUNT=0
           page=1
           while true; do
             urls=$(curl -s "https://www.senlutteurs.com/sitemap.xml?page=$page" \
@@ -42,7 +44,7 @@ jobs:
               URL_COUNT=$((URL_COUNT + 1))
               response=$(curl -s -D - -o /dev/null --max-time 15 \
                 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-                "$url")
+                "$url" 2>/dev/null) || { echo "[$URL_COUNT] [CURL_ERR] $url"; ERROR_COUNT=$((ERROR_COUNT + 1)); continue; }
               http_code=$(echo "$response" | grep -oP '(?<=HTTP/\S\s)\d+' | tail -1)
               cache_status=$(echo "$response" | grep -i '^x-litespeed-cache:' | awk '{print $2}' | tr -d '\r')
               echo "[$URL_COUNT] [$http_code] [${cache_status:-nocache}] $url"
@@ -57,7 +59,7 @@ jobs:
             page=$((page + 1))
           done
           echo "=================================="
-          echo "Total : $URL_COUNT | HIT : $HIT_COUNT | MISS : $MISS_COUNT"
+          echo "Total : $URL_COUNT | HIT : $HIT_COUNT | MISS : $MISS_COUNT | ERRORS : $ERROR_COUNT"
           echo "=================================="
 
       - name: Désactiver flag warming_in_progress
