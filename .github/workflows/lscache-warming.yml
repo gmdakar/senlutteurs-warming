@@ -9,6 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Debug SSH_HOST
+        run: |
+          echo "SSH_HOST length: ${#SSH_HOST}"
+          echo "SSH_HOST starts with: ${SSH_HOST:0:3}"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
