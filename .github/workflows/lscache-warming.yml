@@ -31,7 +31,6 @@ jobs:
           ERROR_COUNT=0
           page=1
 
-          # Définition des User-Agents pour couvrir Desktop et Mobile (Régle le problème du Vary)
           UA_DESKTOP="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           UA_MOBILE="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
 
@@ -70,13 +69,16 @@ jobs:
                 continue
               }
 
-              # Analyse des headers de la réponse Desktop pour les logs
-              http_code=$(echo "$resp_desktop" | grep -oP '(?<=HTTP/\S\s)\d+' | tail -1)
-              cache_status=$(echo "$resp_desktop" | grep -i '^x-litespeed-cache:' | awk '{print $2}' | tr -d '\r')
+              # --- Analyse uniquement le dernier bloc de headers (après redirections) ---
+              last_headers=$(echo "$resp_desktop" | awk '/^HTTP\//{ buf="" } { buf = buf $0 "\n" } END{ print buf }')
+
+              http_code=$(echo "$last_headers" | grep -oP '(?<=HTTP/\S\s)\d+' | tail -1)
+              cache_status=$(echo "$last_headers" | grep -i '^x-litespeed-cache:' | awk '{print $2}' | tr -d '\r')
 
               echo "[$URL_COUNT] [$http_code] [${cache_status:-miss}] $url"
 
-              if [ "$cache_status" = "hit" ]; then
+              # hit, hit,stale, hit,litemage → tous comptés comme HIT
+              if echo "$cache_status" | grep -qi '^hit'; then
                 HIT_COUNT=$((HIT_COUNT + 1))
               else
                 MISS_COUNT=$((MISS_COUNT + 1))
@@ -105,4 +107,4 @@ jobs:
         if: always()
         run: |
           ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
-            "~/www/vendor/drush/drush/drush state:del warming_in_progress"
+            "~/www/vendor/drush/drush/drush state:delete warming_in_progress"
