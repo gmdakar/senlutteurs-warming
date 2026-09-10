@@ -79,10 +79,14 @@ jobs:
 
           while true; do
 
-            URLS=$(curl -s "${DOMAIN}/sitemap.xml?page=${PAGE}" \
+            # Téléchargement du Sitemap avec le User-Agent
+            SITEMAP_RESP=$(curl -s -A "$UA" "${DOMAIN}/sitemap.xml?page=${PAGE}")
+
+            # Extraction robuste des URLs
+            URLS=$(echo "$SITEMAP_RESP" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's#<loc>##' -e 's#</loc>##' \
-              | grep -v 'sitemap\.xml')
+              | grep -v 'sitemap\.xml\?page=')
 
             if [ -z "$URLS" ]; then
               echo ""
