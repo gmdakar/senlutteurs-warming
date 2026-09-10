@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
@@ -200,3 +203,6 @@ jobs:
         run: |
           ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
             "~/www/vendor/drush/drush/drush state:delete warming_in_progress"
+
+      - name: Prevent GitHub Actions inactivity pause
+        uses: gautamkrishnar/keepalive-workflow@v2
