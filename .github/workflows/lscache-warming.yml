@@ -9,7 +9,6 @@ jobs:
   warm:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-
     steps:
       - name: Setup SSH
         run: |
@@ -24,10 +23,9 @@ jobs:
             "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
              ~/www/vendor/drush/drush/drush state:set warming_started_at \$(date +%s)"
 
-      - name: LSCache warm
-        shell: bash
+      - name: LSCache warm (exécuté sur le serveur, en local origin)
         run: |
-
+          ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'REMOTE_SCRIPT'
           set +e
 
           URL_COUNT=0
@@ -35,40 +33,41 @@ jobs:
           MISS_COUNT=0
           NOCACHE_COUNT=0
           ERROR_COUNT=0
-
           PAGE=1
 
           DOMAIN="https://www.senlutteurs.com"
-
+          HOST_HEADER="www.senlutteurs.com"
+          # On tape l'origine en local pour éviter Cloudflare (adapter si besoin) :
+          ORIGIN="https://127.0.0.1"
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
           normalize_url() {
             local u="$1"
-
             u=$(echo "$u" | sed -E 's#^http://#https://#')
             u=$(echo "$u" | sed -E 's#^https://senlutteurs\.com#https://www.senlutteurs.com#')
             u=$(echo "$u" | sed -E 's/#.*$//')
-
             echo "$u"
           }
 
+          # Convertit une URL publique en appel local origin (host header + -k car cert peut ne pas matcher 127.0.0.1)
           request_headers() {
             local url="$1"
-
+            local path="${url#$DOMAIN}"
             curl -s \
               -D - \
               -o /dev/null \
               --compressed \
-              --http2 \
+              --http1.1 \
+              -k \
               --max-time 20 \
               -A "$UA" \
-              "$url" 2>/dev/null
+              -H "Host: $HOST_HEADER" \
+              "${ORIGIN}${path}" 2>/dev/null
           }
 
           extract_header() {
             local headers="$1"
             local name="$2"
-
             echo "$headers" \
               | grep -i "^$name:" \
               | tail -1 \
@@ -78,11 +77,9 @@ jobs:
           }
 
           while true; do
+            SITEMAP_PATH="/sitemap.xml?page=${PAGE}"
+            SITEMAP_RESP=$(curl -s -k -A "$UA" -H "Host: $HOST_HEADER" "${ORIGIN}${SITEMAP_PATH}")
 
-            # Téléchargement du Sitemap avec le User-Agent
-            SITEMAP_RESP=$(curl -s -A "$UA" "${DOMAIN}/sitemap.xml?page=${PAGE}")
-
-            # Extraction robuste des URLs
             URLS=$(echo "$SITEMAP_RESP" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's#<loc>##' -e 's#</loc>##' \
@@ -91,6 +88,8 @@ jobs:
             if [ -z "$URLS" ]; then
               echo ""
               echo "===== FIN SITEMAP PAGE ${PAGE} ====="
+              echo "Taille réponse: $(echo -n "$SITEMAP_RESP" | wc -c) octets"
+              echo "Extrait: $(echo "$SITEMAP_RESP" | head -c 300)"
               break
             fi
 
@@ -98,19 +97,11 @@ jobs:
             echo "===== SITEMAP PAGE ${PAGE} ====="
 
             while read -r RAW_URL; do
-
               [ -z "$RAW_URL" ] && continue
-
               URL_COUNT=$((URL_COUNT + 1))
-
               URL=$(normalize_url "$RAW_URL")
-
               echo ""
               echo "[$URL_COUNT] $URL"
-
-              ##########################################################
-              # WARM REQUEST
-              ##########################################################
 
               HEADERS1=$(request_headers "$URL")
 
@@ -129,49 +120,30 @@ jobs:
 
               if echo "$CACHE_CONTROL" \
                 | grep -qiE 'private|no-cache|no-store'; then
-
                 echo "    [NO CACHE]"
                 NOCACHE_COUNT=$((NOCACHE_COUNT + 1))
-
                 sleep 0.5
                 continue
               fi
 
-              ##########################################################
-              # VERIFY HIT
-              ##########################################################
-
               sleep 0.5
-
               HEADERS2=$(request_headers "$URL")
-
               CACHE_STATUS=$(extract_header "$HEADERS2" "x-litespeed-cache")
 
               if echo "$CACHE_STATUS" | grep -qi '^hit'; then
-
                 echo "    [HIT ✓]"
                 HIT_COUNT=$((HIT_COUNT + 1))
-
               else
-
                 echo "    [MISS ✗] (${CACHE_STATUS:-none})"
                 MISS_COUNT=$((MISS_COUNT + 1))
               fi
 
-              ##########################################################
-              # SERVER LOAD PROTECTION
-              ##########################################################
-
               if [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "503" ]; then
-
                 echo "    [SERVER LOAD] sleeping 15s"
                 sleep 15
-
               else
-
                 sleep 0.5
               fi
-
             done <<< "$URLS"
 
             echo ""
@@ -183,9 +155,7 @@ jobs:
             echo "ERRORS   : $ERROR_COUNT"
 
             PAGE=$((PAGE + 1))
-
             sleep 3
-
           done
 
           echo ""
@@ -198,6 +168,7 @@ jobs:
           echo "NO CACHE   : $NOCACHE_COUNT"
           echo "ERRORS     : $ERROR_COUNT"
           echo "=================================================="
+          REMOTE_SCRIPT
 
       - name: Désactiver flag warming_in_progress
         if: always()
