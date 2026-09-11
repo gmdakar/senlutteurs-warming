@@ -2,7 +2,7 @@ name: LSCache Warming
 
 on:
   schedule:
-    - cron: '59 0,4,11 * * *'
+    - cron: '01 0,4,11 * * *'
   workflow_dispatch:
 
 concurrency:
