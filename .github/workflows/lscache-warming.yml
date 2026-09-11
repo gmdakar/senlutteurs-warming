@@ -2,13 +2,18 @@ name: LSCache Warming
 
 on:
   schedule:
-    - cron: '40 0,4,11 * * *'
+    - cron: '33 0,4,11 * * *'
   workflow_dispatch:
+
+concurrency:
+  group: lscache-warm
+  cancel-in-progress: true
 
 jobs:
   warm:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360          # max allowed on GitHub-hosted runners (6h)
+
     steps:
       - name: Setup SSH
         run: |
@@ -27,17 +32,14 @@ jobs:
         run: |
           ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'REMOTE_SCRIPT'
           set +e
-
           URL_COUNT=0
           HIT_COUNT=0
           MISS_COUNT=0
           NOCACHE_COUNT=0
           ERROR_COUNT=0
           PAGE=1
-
           DOMAIN="https://www.senlutteurs.com"
           HOST_HEADER="www.senlutteurs.com"
-          # On tape l'origine en local pour éviter Cloudflare (adapter si besoin) :
           ORIGIN="https://127.0.0.1"
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
@@ -49,7 +51,6 @@ jobs:
             echo "$u"
           }
 
-          # Convertit une URL publique en appel local origin (host header + -k car cert peut ne pas matcher 127.0.0.1)
           request_headers() {
             local url="$1"
             local path="${url#$DOMAIN}"
@@ -59,7 +60,7 @@ jobs:
               --compressed \
               --http1.1 \
               -k \
-              --max-time 20 \
+              --max-time 15 \
               -A "$UA" \
               -H "Host: $HOST_HEADER" \
               "${ORIGIN}${path}" 2>/dev/null
@@ -78,8 +79,7 @@ jobs:
 
           while true; do
             SITEMAP_PATH="/sitemap.xml?page=${PAGE}"
-            SITEMAP_RESP=$(curl -s -k -A "$UA" -H "Host: $HOST_HEADER" "${ORIGIN}${SITEMAP_PATH}")
-
+            SITEMAP_RESP=$(curl -s -k -A "$UA" -H "Host: $HOST_HEADER" --max-time 30 "${ORIGIN}${SITEMAP_PATH}")
             URLS=$(echo "$SITEMAP_RESP" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's#<loc>##' -e 's#</loc>##' \
@@ -100,49 +100,40 @@ jobs:
               [ -z "$RAW_URL" ] && continue
               URL_COUNT=$((URL_COUNT + 1))
               URL=$(normalize_url "$RAW_URL")
-              echo ""
               echo "[$URL_COUNT] $URL"
 
-              HEADERS1=$(request_headers "$URL")
-
-              if [ -z "$HEADERS1" ]; then
+              HEADERS=$(request_headers "$URL")
+              if [ -z "$HEADERS" ]; then
                 echo "    [ERROR]"
                 ERROR_COUNT=$((ERROR_COUNT + 1))
-                sleep 1
+                sleep 0.3
                 continue
               fi
 
-              HTTP_CODE=$(echo "$HEADERS1" \
+              HTTP_CODE=$(echo "$HEADERS" \
                 | grep -oP '^HTTP/\S+\s+\K\d+' \
                 | tail -1)
+              CACHE_CONTROL=$(extract_header "$HEADERS" "x-litespeed-cache-control")
 
-              CACHE_CONTROL=$(extract_header "$HEADERS1" "x-litespeed-cache-control")
-
-              if echo "$CACHE_CONTROL" \
-                | grep -qiE 'private|no-cache|no-store'; then
+              if echo "$CACHE_CONTROL" | grep -qiE 'private|no-cache|no-store'; then
                 echo "    [NO CACHE]"
                 NOCACHE_COUNT=$((NOCACHE_COUNT + 1))
-                sleep 0.5
-                continue
-              fi
-
-              sleep 0.5
-              HEADERS2=$(request_headers "$URL")
-              CACHE_STATUS=$(extract_header "$HEADERS2" "x-litespeed-cache")
-
-              if echo "$CACHE_STATUS" | grep -qi '^hit'; then
-                echo "    [HIT ✓]"
-                HIT_COUNT=$((HIT_COUNT + 1))
               else
-                echo "    [MISS ✗] (${CACHE_STATUS:-none})"
-                MISS_COUNT=$((MISS_COUNT + 1))
+                CACHE_STATUS=$(extract_header "$HEADERS" "x-litespeed-cache")
+                if echo "$CACHE_STATUS" | grep -qi '^hit'; then
+                  echo "    [HIT ✓]"
+                  HIT_COUNT=$((HIT_COUNT + 1))
+                else
+                  echo "    [MISS ✗] (${CACHE_STATUS:-none})"
+                  MISS_COUNT=$((MISS_COUNT + 1))
+                fi
               fi
 
               if [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "503" ]; then
-                echo "    [SERVER LOAD] sleeping 15s"
-                sleep 15
+                echo "    [SERVER LOAD] sleeping 10s"
+                sleep 10
               else
-                sleep 0.5
+                sleep 0.15
               fi
             done <<< "$URLS"
 
@@ -153,9 +144,8 @@ jobs:
             echo "MISS     : $MISS_COUNT"
             echo "NO CACHE : $NOCACHE_COUNT"
             echo "ERRORS   : $ERROR_COUNT"
-
             PAGE=$((PAGE + 1))
-            sleep 3
+            sleep 1
           done
 
           echo ""
@@ -175,12 +165,3 @@ jobs:
         run: |
           ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
             "~/www/vendor/drush/drush/drush state:delete warming_in_progress"
-
-      - name: Keepalive API Ping
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          curl -s -X GET \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}" > /dev/null
