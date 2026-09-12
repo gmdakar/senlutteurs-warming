@@ -1,4 +1,4 @@
-name: LSCache Warming
+name: LSCache Warming (Bypass)
 
 on:
   schedule:
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   warm:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 10
 
     steps:
       - name: Setup SSH
@@ -28,137 +28,12 @@ jobs:
             "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
              ~/www/vendor/drush/drush/drush state:set warming_started_at \$(date +%s)"
 
-      - name: LSCache warm (exécuté sur le serveur, en local origin)
+      - name: Bypass - Pas de warming
         run: |
-          ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'REMOTE_SCRIPT'
-          set +e
-          URL_COUNT=0
-          HIT_COUNT=0
-          MISS_COUNT=0
-          NOCACHE_COUNT=0
-          ERROR_COUNT=0
-          PAGE=1
-          DOMAIN="https://www.senlutteurs.com"
-          HOST_HEADER="www.senlutteurs.com"
-          ORIGIN="https://127.0.0.1"
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
-
-          normalize_url() {
-            local u="$1"
-            u=$(echo "$u" | sed -E 's#^http://#https://#')
-            u=$(echo "$u" | sed -E 's#^https://senlutteurs\.com#https://www.senlutteurs.com#')
-            u=$(echo "$u" | sed -E 's/#.*$//')
-            echo "$u"
-          }
-
-          request_headers() {
-            local url="$1"
-            local path="${url#$DOMAIN}"
-            curl -s \
-              -D - \
-              -o /dev/null \
-              --compressed \
-              --http1.1 \
-              -k \
-              --max-time 15 \
-              -A "$UA" \
-              -H "Host: $HOST_HEADER" \
-              "${ORIGIN}${path}" 2>/dev/null
-          }
-
-          extract_header() {
-            local headers="$1"
-            local name="$2"
-            echo "$headers" \
-              | grep -i "^$name:" \
-              | tail -1 \
-              | cut -d: -f2- \
-              | tr -d '\r' \
-              | xargs
-          }
-
-          while true; do
-            SITEMAP_PATH="/sitemap.xml?page=${PAGE}"
-            SITEMAP_RESP=$(curl -s -k -A "$UA" -H "Host: $HOST_HEADER" --max-time 30 "${ORIGIN}${SITEMAP_PATH}")
-            URLS=$(echo "$SITEMAP_RESP" \
-              | grep -oE '<loc>[^<]+</loc>' \
-              | sed -e 's#<loc>##' -e 's#</loc>##' \
-              | grep -v 'sitemap\.xml\?page=')
-
-            if [ -z "$URLS" ]; then
-              echo ""
-              echo "===== FIN SITEMAP PAGE ${PAGE} ====="
-              echo "Taille réponse: $(echo -n "$SITEMAP_RESP" | wc -c) octets"
-              echo "Extrait: $(echo "$SITEMAP_RESP" | head -c 300)"
-              break
-            fi
-
-            echo ""
-            echo "===== SITEMAP PAGE ${PAGE} ====="
-
-            while read -r RAW_URL; do
-              [ -z "$RAW_URL" ] && continue
-              URL_COUNT=$((URL_COUNT + 1))
-              URL=$(normalize_url "$RAW_URL")
-              echo "[$URL_COUNT] $URL"
-
-              HEADERS=$(request_headers "$URL")
-              if [ -z "$HEADERS" ]; then
-                echo "    [ERROR]"
-                ERROR_COUNT=$((ERROR_COUNT + 1))
-                sleep 0.3
-                continue
-              fi
-
-              HTTP_CODE=$(echo "$HEADERS" \
-                | grep -oP '^HTTP/\S+\s+\K\d+' \
-                | tail -1)
-              CACHE_CONTROL=$(extract_header "$HEADERS" "x-litespeed-cache-control")
-
-              if echo "$CACHE_CONTROL" | grep -qiE 'private|no-cache|no-store'; then
-                echo "    [NO CACHE]"
-                NOCACHE_COUNT=$((NOCACHE_COUNT + 1))
-              else
-                CACHE_STATUS=$(extract_header "$HEADERS" "x-litespeed-cache")
-                if echo "$CACHE_STATUS" | grep -qi '^hit'; then
-                  echo "    [HIT ✓]"
-                  HIT_COUNT=$((HIT_COUNT + 1))
-                else
-                  echo "    [MISS ✗] (${CACHE_STATUS:-none})"
-                  MISS_COUNT=$((MISS_COUNT + 1))
-                fi
-              fi
-
-              if [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "503" ]; then
-                echo "    [SERVER LOAD] sleeping 10s"
-                sleep 10
-              else
-                sleep 0.15
-              fi
-            done <<< "$URLS"
-
-            echo ""
-            echo "===== PAGE ${PAGE} DONE ====="
-            echo "TOTAL    : $URL_COUNT"
-            echo "HIT      : $HIT_COUNT"
-            echo "MISS     : $MISS_COUNT"
-            echo "NO CACHE : $NOCACHE_COUNT"
-            echo "ERRORS   : $ERROR_COUNT"
-            PAGE=$((PAGE + 1))
-            sleep 1
-          done
-
-          echo ""
-          echo "=================================================="
-          echo "FINAL REPORT"
-          echo "=================================================="
-          echo "TOTAL URLS : $URL_COUNT"
-          echo "HIT        : $HIT_COUNT"
-          echo "MISS       : $MISS_COUNT"
-          echo "NO CACHE   : $NOCACHE_COUNT"
-          echo "ERRORS     : $ERROR_COUNT"
-          echo "=================================================="
-          REMOTE_SCRIPT
+          echo "=== WARMING BYPASSÉ ==="
+          echo "Aucun crawl de sitemap n'est effectué."
+          echo "Le flag warming_in_progress est activé puis désactivé."
+          sleep 5
 
       - name: Désactiver flag warming_in_progress
         if: always()
