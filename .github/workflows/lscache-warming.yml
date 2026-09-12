@@ -165,3 +165,12 @@ jobs:
         run: |
           ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
             "~/www/vendor/drush/drush/drush state:delete warming_in_progress"
+
+      - name: Keepalive API Ping
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -s -X GET \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}" > /dev/null
