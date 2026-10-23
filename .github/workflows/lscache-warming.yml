@@ -2,7 +2,7 @@ name: LSCache Warming
 
 on:
   schedule:
-    - cron: '0 6,17 * * *'
+    - cron: '50 6,10,12 * * *'
   workflow_dispatch:
     inputs:
       lang:
