@@ -4,34 +4,72 @@ on:
   schedule:
     - cron: '0 6,17 * * *'
   workflow_dispatch:
+    inputs:
+      lang:
+        description: "Langue unique à réchauffer (vide = toutes)"
+        required: false
+        default: ''
 
 concurrency:
   group: lscache-warm
   cancel-in-progress: true
 
-jobs:
-  warm:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+env:
+  SSH_PORT: 5022
 
+jobs:
+  start:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p 5022 -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p $SSH_PORT -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
       - name: Activer flag warming_in_progress
         run: |
-          ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+          ssh -p $SSH_PORT "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
             "~/www/vendor/drush/drush/drush state:set warming_in_progress 1 && \
              ~/www/vendor/drush/drush/drush state:set warming_started_at \$(date +%s)"
 
-      - name: LSCache warm (exécuté sur le serveur, en local origin)
+  warm:
+    needs: start
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 3          # ménage le serveur d'origine
+      matrix:
+        lang: [fr, en, ar, es, ja, zh-hans]
+    steps:
+      - name: Filtrer selon l'input manuel
+        id: gate
         run: |
-          ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'REMOTE_SCRIPT'
+          INPUT="${{ github.event.inputs.lang }}"
+          if [ -n "$INPUT" ] && [ "$INPUT" != "${{ matrix.lang }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup SSH
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p $SSH_PORT -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: LSCache warm (${{ matrix.lang }})
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          ssh -p $SSH_PORT "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            'bash -s' -- "${{ matrix.lang }}" <<'REMOTE_SCRIPT'
           set +e
+          WARM_LANG="$1"
           URL_COUNT=0
           HIT_COUNT=0
           MISS_COUNT=0
@@ -42,6 +80,8 @@ jobs:
           HOST_HEADER="www.senlutteurs.com"
           ORIGIN="https://127.0.0.1"
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+
+          echo "##### LANGUE : ${WARM_LANG} #####"
 
           normalize_url() {
             local u="$1"
@@ -80,12 +120,12 @@ jobs:
           while true; do
             SITEMAP_PATH="/sitemap.xml?page=${PAGE}"
             SITEMAP_RESP=$(curl -s -k -A "$UA" -H "Host: $HOST_HEADER" --max-time 30 "${ORIGIN}${SITEMAP_PATH}")
-            URLS=$(echo "$SITEMAP_RESP" \
+            ALL_URLS=$(echo "$SITEMAP_RESP" \
               | grep -oE '<loc>[^<]+</loc>' \
               | sed -e 's#<loc>##' -e 's#</loc>##' \
               | grep -v 'sitemap\.xml\?page=')
 
-            if [ -z "$URLS" ]; then
+            if [ -z "$ALL_URLS" ]; then
               echo ""
               echo "===== FIN SITEMAP PAGE ${PAGE} ====="
               echo "Taille réponse: $(echo -n "$SITEMAP_RESP" | wc -c) octets"
@@ -93,8 +133,12 @@ jobs:
               break
             fi
 
+            # Ne garder que la langue du job
+            URLS=$(echo "$ALL_URLS" \
+              | grep -E "^https?://(www\.)?senlutteurs\.com/${WARM_LANG}(/|$)")
+
             echo ""
-            echo "===== SITEMAP PAGE ${PAGE} ====="
+            echo "===== SITEMAP PAGE ${PAGE} ($(echo "$URLS" | grep -c .) URLs ${WARM_LANG}) ====="
 
             while read -r RAW_URL; do
               [ -z "$RAW_URL" ] && continue
@@ -138,7 +182,7 @@ jobs:
             done <<< "$URLS"
 
             echo ""
-            echo "===== PAGE ${PAGE} DONE ====="
+            echo "===== PAGE ${PAGE} DONE (${WARM_LANG}) ====="
             echo "TOTAL    : $URL_COUNT"
             echo "HIT      : $HIT_COUNT"
             echo "MISS     : $MISS_COUNT"
@@ -150,7 +194,7 @@ jobs:
 
           echo ""
           echo "=================================================="
-          echo "FINAL REPORT"
+          echo "FINAL REPORT (${WARM_LANG})"
           echo "=================================================="
           echo "TOTAL URLS : $URL_COUNT"
           echo "HIT        : $HIT_COUNT"
@@ -160,10 +204,22 @@ jobs:
           echo "=================================================="
           REMOTE_SCRIPT
 
-      - name: Désactiver flag warming_in_progress
-        if: always()
+  end:
+    needs: [start, warm]
+    if: always() && needs.start.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Setup SSH
         run: |
-          ssh -p 5022 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p $SSH_PORT -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Désactiver flag warming_in_progress
+        run: |
+          ssh -p $SSH_PORT "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
             "~/www/vendor/drush/drush/drush state:delete warming_in_progress"
 
       - name: Keepalive API Ping
